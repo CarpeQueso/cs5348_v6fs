@@ -72,9 +72,9 @@ typedef struct Superblock {
     uint16_t isize;
     uint16_t fsize;
     uint16_t nfree;
-    uint16_t *free;
+    uint16_t free[100];
     uint16_t ninode;
-    uint16_t *inode;
+    uint16_t inode[100];
     uint8_t flock;
     uint8_t ilock;
     uint8_t fmod;

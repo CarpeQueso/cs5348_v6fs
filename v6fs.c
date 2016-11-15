@@ -1,9 +1,20 @@
 #include "v6fs.h"
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <memory.h>
 
 
 FILE *v6FileSystem = NULL;
+
+
+static int8_t v6_alloc(Superblock *sb, uint16_t *blockNumber);
+static int8_t v6_free(Superblock *sb, uint16_t blockNumber);
+static int8_t v6_read_block(uint16_t blockNumber, void *data, size_t size);
+static int8_t v6_write_block(uint16_t blockNumber, void *data, size_t size);
+static void convertBytesToSuperblock(uint8_t *data, Superblock *sb);
+static void convertSuperblockToBytes(Superblock* sb, uint8_t *data);
+static size_t getBlockAddress(uint16_t blockNumber);
 
 
 int8_t v6_loadfs(char *v6FileSystemName, Superblock *sb) {
@@ -212,5 +223,5 @@ static void convertSuperblockToBytes(Superblock* sb, uint8_t *data) {
 }
 
 static size_t getBlockAddress(uint16_t blockNumber) {
-    return blockNumber * 512;
+    return blockNumber * 512U;
 }

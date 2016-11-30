@@ -18,7 +18,7 @@ void cleartoendofline( void )
 
 /* Fucntion to check if entered command is valid */
 bool isValidCommand(char* userInput, char* command) {
-    return ()
+    return (strcmp(userInput, command) == 0 ? true : false);
 }
 
 int main()
@@ -49,10 +49,13 @@ int main()
 
         int tokenIndex = 1;
         while(token != NULL) {
-            printf("token: %s\n", token);
+//            printf("token: %s\n", token[tokenIndex]);
             token = strtok(NULL, " ");
-            tokens[tokenIndex++] = token;
+            if(token != NULL){
+                tokens[tokenIndex++] = token;
+            }
         }
+//        printf("%d\n",isValidCommand(tokens[0], "initfs"));
 
         valid_choice = 0;
         while( valid_choice == 0 ) {

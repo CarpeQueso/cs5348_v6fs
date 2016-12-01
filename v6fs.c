@@ -16,6 +16,7 @@ static Inode* loadInode(Superblock *sb, uint16_t inodeNumber);
 static int8_t saveInode(Superblock *sb, uint16_t inodeNumber, Inode *inode);
 static int8_t initInode(Inode *inode);
 static int8_t repopulateInodeList(Superblock *sb);
+static uint16_t getNextAllocatedBlockNumber(Inode *inode);
 static void convertBytesToSuperblock(uint8_t *data, Superblock *sb);
 static void convertSuperblockToBytes(Superblock* sb, uint8_t *data);
 static void convertBytesToInode(uint8_t *data, Inode *inode);
@@ -226,6 +227,10 @@ static int8_t v6_free(Superblock *sb, uint16_t blockNumber) {
     uint16_t *blockData;
     int8_t blockWriteSuccess;
 
+    if (blockNumber < 2 || blockNumber >= sb->fsize) {
+        return E_INVALID_BLOCK_NUMBER;
+    }
+
     if (sb->nfree == 100) {
         // Allocate one 512 byte chunk to buffer write data
         blockData = malloc(sizeof(uint16_t) * 256);
@@ -373,6 +378,117 @@ static int8_t initInode(Inode *inode) {
     inode->actime[1] = 0;
     inode->modtime[0] = 0;
     inode->modtime[1] = 0;
+}
+
+/*
+ *
+ */
+static uint16_t getNextAllocatedBlockNumber(Inode *inode) {
+    static Inode *persistentInode;
+    static uint16_t isLargeFile;
+    // Note: In this file system, 32 bit type is enough to hold our max number
+    // of bytes in a file (32MB). If larger files are allowed, increase
+    // the width of byteOffset.
+    // byteOffset holds the offset of the *current* call to getNextAllocatedBlockNumber
+    // and is incremented by the block size after the next block has been found.
+    static uint32_t blockIndex;
+
+
+    if (inode == NULL) {
+        if (persistentInode == NULL) {
+            return 0;
+        }
+    } else {
+        // Set static references and start from beginning of i-node
+        persistentInode = inode;
+        isLargeFile = inode->flags & FLAG_LARGE_FILE;
+        blockIndex = 0;
+    }
+
+    uint16_t nextAddressIndex = 0;
+    uint16_t nextSinglyIndirectBlockNumber = 0;
+    uint16_t singlyIndirectBlockData[256] = { 0 };
+    uint16_t doublyIndirectBlockData[256] = { 0 };
+
+    if (isLargeFile) {
+        nextAddressIndex = blockIndex / 256;
+
+        if (nextAddressIndex < 7) {
+            // Singly indirect blocks here
+            while (nextAddressIndex < 7) {
+                nextSinglyIndirectBlockNumber = persistentInode->addr[nextAddressIndex];
+                if (nextSinglyIndirectBlockNumber != 0) {
+                    // Valid indirect block number
+                    v6_read_block(nextSinglyIndirectBlockNumber, singlyIndirectBlockData, 2);
+                    uint16_t singlyIndirectBlockIndex = blockIndex % 256;
+                    while (singlyIndirectBlockIndex < 256) {
+                        uint16_t blockNumber = singlyIndirectBlockData[singlyIndirectBlockIndex];
+                        blockIndex += 1;
+                        if (blockNumber != 0) {
+                            // Valid block number
+                            return blockNumber;
+                        } else {
+                            singlyIndirectBlockIndex++;
+                        }
+                    }
+                } else {
+                    blockIndex += 256;
+                    nextAddressIndex++;
+                }
+            }
+            // If we reach this point, the only place left to check is the doubly indirect block.
+            // For simplicity's sake, make the recursive call since it should only result in one
+            // level of recursion.
+            return getNextAllocatedBlockNumber(NULL);
+        } else {
+            if (blockIndex >= 1UL << 25) {
+                // Larger than allowed 32MB file size.
+                return 0;
+            }
+            // Doubly indirect block
+            if (persistentInode->addr[nextAddressIndex] != 0) {
+                v6_read_block(persistentInode->addr[nextAddressIndex], doublyIndirectBlockData, 2);
+                uint16_t doublyIndirectBlockIndex = blockIndex / 256 - 7;
+                while (doublyIndirectBlockIndex < 256) {
+                    nextSinglyIndirectBlockNumber = doublyIndirectBlockData[doublyIndirectBlockIndex];
+                    if (nextSinglyIndirectBlockNumber != 0) {
+                        v6_read_block(nextSinglyIndirectBlockNumber, singlyIndirectBlockData, 2);
+                        uint16_t singlyIndirectBlockIndex = blockIndex % 256;
+                        while (singlyIndirectBlockIndex < 256) {
+                            uint16_t blockNumber = singlyIndirectBlockData[singlyIndirectBlockIndex];
+                            blockIndex += 1;
+                            if (blockNumber != 0) {
+                                // Valid block number
+                                return blockNumber;
+                            } else {
+                                singlyIndirectBlockIndex++;
+                            }
+                        }
+                    } else {
+                        blockIndex += 256;
+                        doublyIndirectBlockIndex++;
+                    }
+                }
+            }
+        }
+    } else {
+        if (blockIndex >= 8) {
+            return 0;
+        } else {
+            while (blockIndex < 8) {
+                uint16_t blockNumber = persistentInode->addr[blockIndex];
+                blockIndex += 1;
+                if (blockNumber != 0) {
+                    // We have a valid block number
+                    return blockNumber;
+                }
+            }
+        }
+    }
+
+    // If we haven't found a block number by this point,
+    // we've run out of places to look. There are no more blocks.
+    return 0;
 }
 
 static void convertBytesToSuperblock(uint8_t *data, Superblock *sb) {

@@ -82,6 +82,7 @@
 #define E_FILE_SYSTEM_NULL                  4
 #define E_BLOCK_READ_FAILURE                5
 #define E_BLOCK_WRITE_FAILURE               6
+#define E_INVALID_BLOCK_NUMBER              7
 
 
 typedef struct Superblock {

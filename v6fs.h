@@ -5,10 +5,15 @@
 #include <stdio.h>
 
 /*
+ * Block size in bytes
+ */
+#define BLOCK_SIZE                          512
+
+/*
  * I-node flags bits (in octal).
  */
 
-#define FLAG_INODE_ALLCOATED                0100000
+#define FLAG_INODE_ALLOCATED                0100000
 
 /*
  * Both bits used for the four possible file types.
@@ -68,6 +73,17 @@
 #define FLAG_OTHER_EXECUTE                  0000001
 
 
+/*
+ * Error codes
+ */
+#define E_FILE_OPEN_FAILURE                 1
+#define E_SEEK_FAILURE                      2
+#define E_SUPERBLOCK_READ_ERROR             3
+#define E_FILE_SYSTEM_NULL                  4
+#define E_BLOCK_READ_FAILURE                5
+#define E_BLOCK_WRITE_FAILURE               6
+
+
 typedef struct Superblock {
     uint16_t isize;
     uint16_t fsize;
@@ -99,13 +115,21 @@ typedef struct Inode {
 extern FILE *v6FileSystem;
 
 /*
- * Initializes the v6 file system at the location given by v6FileSystemName on the host machine.
+ * Loads the superblock from the given file system location.
+ *
+ * sb - the variable to store the newly loaded superblock.
+ */
+extern int8_t v6_loadfs(char *v6FileSystemName, Superblock *sb);
+
+/*
+ * Initializes a new, empty v6 file system.
  *
  * numBlocks - the number of blocks to create in the V6 file system.
  * numInodes - the number of i-nodes contained within this filesystem.
  * sb - where the newly allocated superblock will be stored.
  */
-extern int8_t v6_initfs(char* v6FileSystemName, uint32_t numBlocks, uint32_t numInodes, Superblock *sb);
+extern int8_t v6_initfs(uint16_t numBlocks, uint16_t numInodes, Superblock *sb);
+
 
 /*
  * Reads a file from an external file location and writes it to a location within the V6 file system.

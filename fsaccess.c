@@ -33,6 +33,10 @@ int main(int argc, char *argv[])
     char*   tokens[3];
     Superblock sb;
 
+    //Load the filesystem
+    v6_loadfs(argv[1], &sb);
+    //v6_loadfs("/Users/DebaImade/ClionProjects/cs5348_v6fs", &sb);
+
     while( exit_flag  == 0 ) {
         printf("v6fs: \n");
         ch = getchar();
@@ -71,7 +75,7 @@ int main(int argc, char *argv[])
         if (isValidCommand(tokens[0], "initfs")){
             __uint32_t numBlocks = atoi(tokens[1]);
             __uint32_t numInodes = atoi(tokens[2]);
-            v6_initfs(argv[1], numBlocks, numInodes, &sb);
+            v6_initfs(numBlocks, numInodes, &sb);
         }
 
         if (isValidCommand(tokens[0], "cpin")){

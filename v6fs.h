@@ -90,6 +90,7 @@
 #define E_NO_SUCH_FILE                      8
 #define E_ALLOCATE_FAILURE                  9
 #define E_INVALID_INDEX                     10
+#define E_INVALID_INODE_NUMBER              11
 
 
 typedef struct Superblock {

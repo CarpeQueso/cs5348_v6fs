@@ -17,9 +17,9 @@ static uint16_t createDirectory(Superblock *sb, char *filename);
 static uint16_t getTerminalInodeNumber(Superblock *sb, char *filename);
 static Inode* loadInode(Superblock *sb, uint16_t inodeNumber);
 static int8_t saveInode(Superblock *sb, uint16_t inodeNumber, Inode *inode);
+static uint16_t getNewInodeNumber(Superblock *sb);
+static int8_t freeInode(Superblock *sb, uint16_t inodeNumber);
 static int8_t initInode(Inode *inode);
-
-static int8_t freeInodeData(Superblock *sb, Inode *inode);
 static int8_t repopulateInodeList(Superblock *sb);
 static int8_t addAllocatedBlockToInode(Superblock *sb, Inode *inode, uint16_t numBytes, uint16_t blockNumber);
 static int8_t convertInodeToLargeFile(Superblock *sb, Inode *inode);
@@ -39,8 +39,6 @@ static uint16_t inodeIsLargeFile(Inode *inode);
 static size_t getBlockAddress(uint16_t blockNumber);
 static uint32_t getFileSize(Inode *inode);
 static void setFileSize(Inode *inode, uint32_t fileSize);
-
-static Inode* getNewInode(Superblock *sb);
 
 
 Superblock * v6_loadfs(char *v6FileSystemName) {
@@ -239,19 +237,15 @@ int8_t v6_mkdir(Superblock *sb, char *v6DirectoryName) {
 }
 
 int8_t v6_rm(Superblock *sb, char *v6Filename) {
-    Inode *inode;
     uint16_t inodeNumber;
-    uint16_t blockNumber;
 
     inodeNumber = getTerminalInodeNumber(sb, v6Filename);
-    inode = loadInode(sb, inodeNumber);
 
-    if (inode == NULL) {
+    if (inodeNumber == 0) {
         return E_NO_SUCH_FILE;
     }
 
-    freeInodeData(sb, inode);
-    //freeInode(sb, inodeNumber);
+    freeInode(sb, inodeNumber);
 
     return 0;
 }
@@ -390,6 +384,7 @@ static int8_t v6_write_block(uint16_t blockNumber, void *data, size_t size) {
 
 static uint16_t createFile(Superblock *sb, char *filename) {
 
+
     return 0;
 }
 
@@ -405,12 +400,15 @@ static uint16_t getTerminalInodeNumber(Superblock *sb, char *filename) {
     char delim[] = "/\0";
     Inode *root = loadInode(&sb, 1);
     uint16_t terminalInodeNumber;
+
     terminalInodeNumber = findDirectoryEntry(root, filePathToken);
+
     while(filePathToken != NULL) {
         filePathToken = strtok(NULL, delim);
         Inode *nextInode = loadInode(&sb, terminalInodeNumber);
         terminalInodeNumber = findDirectoryEntry(nextInode, filePathToken);
     }
+
     return terminalInodeNumber;
 }
 
@@ -493,10 +491,34 @@ static int8_t initInode(Inode *inode) {
     inode->modtime[1] = 0;
 }
 
-static int8_t freeInodeData(Superblock *sb, Inode *inode) {
+/*
+ * Returns a new inode
+ */
+static uint16_t getNewInodeNumber(Superblock *sb){
+    uint16_t newInodeNumber = 0;
+
+    if(sb->ninode == 0){
+        repopulateInodeList(sb);
+    }
+
+    if(sb->ninode > 0) {
+        sb->ninode--;
+        newInodeNumber = sb->inode[sb->ninode];
+    }
+
+    return newInodeNumber;
+}
+
+static int8_t freeInode(Superblock *sb, uint16_t inodeNumber) {
+    if (inodeNumber < 1 || inodeNumber > sb->isize * 16) {
+        return E_INVALID_INODE_NUMBER;
+    }
+
     size_t blockIndex = 0;
+    Inode *inode = loadInode(sb, inodeNumber);
     uint16_t nextAllocatedBlockNumber = getNextAllocatedBlockNumber(inode);
 
+    // Free i-node data
     while (nextAllocatedBlockNumber != 0) {
         v6_free(sb, nextAllocatedBlockNumber);
 
@@ -516,6 +538,10 @@ static int8_t freeInodeData(Superblock *sb, Inode *inode) {
             v6_free(sb, inode->addr[7]);
         }
     }
+
+    // Deallocate i-node
+    initInode(inode);
+    saveInode(sb, inodeNumber, inode);
 
     return 0;
 }
@@ -1012,23 +1038,4 @@ static void setFileSize(Inode *inode, uint32_t fileSize) {
 
     inode->size0 = (uint8_t) ((fileSize >> 16) & 0xFF);
     inode->size1 = (uint16_t) fileSize;
-}
-
-/*
- * Returns a new inode
- */
-static Inode* getNewInode(Superblock *sb){
-    uint16_t newInodeNumber;
-    Inode *newInode;
-    if(sb->ninode == 0){
-        repopulateInodeList(sb);
-    }
-
-    if(sb->ninode > 0) {
-        sb->ninode--;
-        newInodeNumber = sb->inode[sb->ninode];
-    }
-    newInode = loadInode(&sb, newInodeNumber);
-    saveInode(&sb, newInodeNumber, newInode);
-    return newInode;
 }

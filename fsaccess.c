@@ -36,8 +36,7 @@ int main(int argc, char *argv[])
     Superblock *sb;
 
     //Load the filesystem
-    sb = v6_loadfs("/Users/jon/UTD/CS5348/Project_2/v6fs/test.v6fs");
-    sb = v6_initfs(5000, 400);
+    sb = v6_loadfs(argv[1]);
 
     while( exit_flag  == 0 ) {
         printf("v6fs: \n");
@@ -77,27 +76,27 @@ int main(int argc, char *argv[])
         if (isValidCommand(tokens[0], "initfs")){
             __uint32_t numBlocks = atoi(tokens[1]);
             __uint32_t numInodes = atoi(tokens[2]);
-            v6_initfs(numBlocks, numInodes);
+            sb = v6_initfs(numBlocks, numInodes);
         }
 
         if (isValidCommand(tokens[0], "cpin")){
-            v6_cpin(&sb, tokens[1], tokens[2]);
+            v6_cpin(sb, tokens[1], tokens[2]);
         }
 
         if (isValidCommand(tokens[0], "cpout")){
-            v6_cpout(&sb, tokens[1], tokens[2]);
+            v6_cpout(sb, tokens[1], tokens[2]);
         }
 
         if (isValidCommand(tokens[0], "mkdir")){
-            v6_mkdir(&sb, tokens[1]);
+            v6_mkdir(sb, tokens[1]);
         }
 
         if (isValidCommand(tokens[0], "rm")){
-            v6_rm(&sb, tokens[1]);
+            v6_rm(sb, tokens[1]);
         }
 
         if (isValidCommand(tokens[0], "q")){
-            v6_quit(&sb);
+            v6_quit(sb);
         }
 
         valid_choice = 0;

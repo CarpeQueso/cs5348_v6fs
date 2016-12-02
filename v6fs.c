@@ -40,6 +40,8 @@ static size_t getBlockAddress(uint16_t blockNumber);
 static uint32_t getFileSize(Inode *inode);
 static void setFileSize(Inode *inode, uint32_t fileSize);
 
+static Inode* getNewInode(Superblock *sb);
+
 
 Superblock * v6_loadfs(char *v6FileSystemName) {
     Superblock *sb;
@@ -395,10 +397,21 @@ static uint16_t createDirectory(Superblock *sb, char *filename) {
 
     return 0;
 }
-
+/*
+ * Traverses inodes along a specified path, returning the inode number of the file
+ */
 static uint16_t getTerminalInodeNumber(Superblock *sb, char *filename) {
-
-    return 0;
+    char* filePathToken = strtok(filename, "/");
+    char delim[] = "/\0";
+    Inode *root = loadInode(&sb, 1);
+    uint16_t terminalInodeNumber;
+    terminalInodeNumber = findDirectoryEntry(root, filePathToken);
+    while(filePathToken != NULL) {
+        filePathToken = strtok(NULL, delim);
+        Inode *nextInode = loadInode(&sb, terminalInodeNumber);
+        terminalInodeNumber = findDirectoryEntry(nextInode, filePathToken);
+    }
+    return terminalInodeNumber;
 }
 
 /*
@@ -999,4 +1012,23 @@ static void setFileSize(Inode *inode, uint32_t fileSize) {
 
     inode->size0 = (uint8_t) ((fileSize >> 16) & 0xFF);
     inode->size1 = (uint16_t) fileSize;
+}
+
+/*
+ * Returns a new inode
+ */
+static Inode* getNewInode(Superblock *sb){
+    uint16_t newInodeNumber;
+    Inode *newInode;
+    if(sb->ninode == 0){
+        repopulateInodeList(sb);
+    }
+
+    if(sb->ninode > 0) {
+        sb->ninode--;
+        newInodeNumber = sb->inode[sb->ninode];
+    }
+    newInode = loadInode(&sb, newInodeNumber);
+    saveInode(&sb, newInodeNumber, newInode);
+    return newInode;
 }

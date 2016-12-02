@@ -174,6 +174,6 @@ extern int8_t v6_rm(Superblock *sb, char *v6Filename);
  */
 extern int8_t v6_quit(Superblock *sb);
 
-
+extern uint16_t getNewInodeNumber(Superblock *sb);
 
 #endif

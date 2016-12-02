@@ -12,19 +12,32 @@ static int8_t v6_alloc(Superblock *sb, uint16_t *blockNumber);
 static int8_t v6_free(Superblock *sb, uint16_t blockNumber);
 static int8_t v6_read_block(uint16_t blockNumber, void *data, size_t size);
 static int8_t v6_write_block(uint16_t blockNumber, void *data, size_t size);
+static uint16_t createFile(Superblock *sb, char *filename);
+static uint16_t createDirectory(Superblock *sb, char *filename);
+static uint16_t getTerminalInodeNumber(Superblock *sb, char *filename);
 static Inode* loadInode(Superblock *sb, uint16_t inodeNumber);
 static int8_t saveInode(Superblock *sb, uint16_t inodeNumber, Inode *inode);
 static int8_t initInode(Inode *inode);
+
+static int8_t freeInodeData(Inode *inode);
 static int8_t repopulateInodeList(Superblock *sb);
+static int8_t addAllocatedBlockToInode(Inode *inode, uint16_t blockNumber, uint16_t numBytes);
 static uint16_t getNextAllocatedBlockNumber(Inode *inode);
+static int8_t addDirectoryEntry(Superblock *sb, Inode *inode, char *filename, uint16_t inodeNumber);
+static int8_t removeDirectoryEntry(Inode *inode, char *filename);
+static uint16_t findDirectoryEntry(Inode *inode, char *filename);
 static void convertBytesToSuperblock(uint8_t *data, Superblock *sb);
 static void convertSuperblockToBytes(Superblock* sb, uint8_t *data);
 static void convertBytesToInode(uint8_t *data, Inode *inode);
 static void convertInodeToBytes(Inode *inode, uint8_t *data);
+static uint16_t inodeIsDirectory(Inode *inode);
 static size_t getBlockAddress(uint16_t blockNumber);
+static uint32_t getFileSize(Inode *inode);
+static void setFileSize(Inode *inode, uint32_t fileSize);
 
 
-int8_t v6_loadfs(char *v6FileSystemName, Superblock *sb) {
+Superblock * v6_loadfs(char *v6FileSystemName) {
+    Superblock *sb;
     size_t sbSize = sizeof(Superblock);
     // Array to store raw superblock data before it is assigned.
     uint8_t sbBytes[BLOCK_SIZE];
@@ -35,14 +48,14 @@ int8_t v6_loadfs(char *v6FileSystemName, Superblock *sb) {
     if (v6FileSystem == NULL) {
         v6FileSystem = fopen(v6FileSystemName, "w+");
         if (v6FileSystem == NULL) {
-            return E_FILE_OPEN_FAILURE;
+            return NULL;
         }
     }
 
     blockReadSuccess = v6_read_block(1, sbBytes, 1);
 
     if (blockReadSuccess != 0) {
-        return blockReadSuccess;
+        return NULL;
     }
 
     // Allocate sb and set values.
@@ -50,10 +63,11 @@ int8_t v6_loadfs(char *v6FileSystemName, Superblock *sb) {
 
     convertBytesToSuperblock(sbBytes, sb);
 
-    return 0;
+    return sb;
 }
 
-int8_t v6_initfs(uint16_t numBlocks, uint16_t numInodes, Superblock *sb) {
+Superblock * v6_initfs(uint16_t numBlocks, uint16_t numInodes) {
+    Superblock *sb;
     uint8_t block[BLOCK_SIZE] = { 0 };
     // The number of blocks required to hold the designated number of inodes.
     uint16_t numInodeBlocks;
@@ -63,7 +77,7 @@ int8_t v6_initfs(uint16_t numBlocks, uint16_t numInodes, Superblock *sb) {
     uint16_t firstDataBlockNumber, firstFreeBlockNumber;
 
     if (v6FileSystem == NULL) {
-        return E_FILE_SYSTEM_NULL;
+        return NULL;
     }
 
     for (size_t i = 0; i < numBlocks; i++) {
@@ -98,7 +112,7 @@ int8_t v6_initfs(uint16_t numBlocks, uint16_t numInodes, Superblock *sb) {
     // Set the pointer to the previous free list block to zero. There are no others prior to this one.
     sb->free[0] = 0;
     sb->ninode = 0;
-    repopulateInodeList(sb);
+
     // TODO: set time?
 
     // Create free list
@@ -123,44 +137,111 @@ int8_t v6_initfs(uint16_t numBlocks, uint16_t numInodes, Superblock *sb) {
         v6_write_block((uint16_t) blockNum, inodes, 32);
     }
 
+    repopulateInodeList(sb);
+
     // Init root i-node
     Inode *inode = loadInode(sb, 1);
-    uint16_t newBlockNumber;
-    uint8_t rootDirectoryData[512];
-    uint8_t firstRootEntry[] = { 0x01, 0x00, '.', 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-    uint8_t secondRootEntry[] = { 0x00, 0x00, '.', '.', 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-    memcpy(rootDirectoryData, firstRootEntry, 16);
-    memcpy(&rootDirectoryData[16], secondRootEntry, 16);
 
-    v6_alloc(sb, &newBlockNumber);
-    inode->addr[0] = newBlockNumber;
-    v6_write_block(newBlockNumber, rootDirectoryData, 1);
+    addDirectoryEntry(sb, inode, ".", 1);
+    addDirectoryEntry(sb, inode, "..", 0);
 
     saveInode(sb, inode, 1);
 
-    return 0;
+    return sb;
 }
 
 int8_t v6_cpin(Superblock *sb, char *externalFilename, char *v6Filename) {
+    FILE *f = fopen(externalFilename, "r");
+    Inode *inode;
+    uint16_t inodeNumber;
+    uint16_t blockNumber;
+    uint8_t data[BLOCK_SIZE] = { 0 };
 
+    if (f == NULL) {
+        return E_FILE_OPEN_FAILURE;
+    }
+
+    // Create i-node for the new file and any new directory i-nodes leading
+    // up to the file location.
+    inodeNumber = createFile(sb, v6Filename);
+    inode = loadInode(sb, inodeNumber);
+
+    // Allocate blocks and add to i-node sequentially from external file
+    while (feof(f) == 0) {
+        v6_alloc(sb, blockNumber);
+        size_t numBytes = fread(data, 1, BLOCK_SIZE, f);
+        v6_write_block(blockNumber, data, 1);
+        addAllocatedBlockToInode(inode, blockNumber, (uint16_t) numBytes);
+    }
 
     return 0;
 }
 
 int8_t v6_cpout(Superblock *sb, char *v6Filename, char *externalFilename) {
+    FILE *f = fopen(externalFilename, "w");
+    Inode *inode;
+    uint16_t inodeNumber;
+    uint32_t remainingBytes;
+    uint16_t blockNumber;
+    uint8_t data[BLOCK_SIZE] = { 0 };
 
+    if (f == NULL) {
+        return E_FILE_OPEN_FAILURE;
+    }
+
+    // Create i-node for the new file and any new directory i-nodes leading
+    // up to the file location.
+    inodeNumber = getTerminalInodeNumber(sb, v6Filename);
+    inode = loadInode(sb, inodeNumber);
+
+    if (inode == NULL) {
+        return E_NO_SUCH_FILE;
+    }
+
+    remainingBytes = getFileSize(inode);
+    blockNumber = getNextAllocatedBlockNumber(inode);
+
+    // Allocate blocks and add to i-node sequentially from external file
+    while (remainingBytes > 0) {
+        v6_read_block(blockNumber, data, 1);
+        if (remainingBytes >= 512) {
+            fwrite(data, 1, BLOCK_SIZE, f);
+            remainingBytes -= 512;
+        } else {
+            fwrite(data, 1, remainingBytes, f);
+            remainingBytes = 0;
+        }
+        getNextAllocatedBlockNumber(NULL);
+    }
 
     return 0;
 }
 
 int8_t v6_mkdir(Superblock *sb, char *v6DirectoryName) {
+    uint16_t inodeNumber;
 
+    inodeNumber = createDirectory(sb, v6DirectoryName);
 
+    if (inodeNumber == 0) {
+        return -1;
+    }
     return 0;
 }
 
 int8_t v6_rm(Superblock *sb, char *v6Filename) {
+    Inode *inode;
+    uint16_t inodeNumber;
+    uint16_t blockNumber;
 
+    inodeNumber = getTerminalInodeNumber(sb, v6Filename);
+    inode = loadInode(sb, inodeNumber);
+
+    if (inode == NULL) {
+        return E_NO_SUCH_FILE;
+    }
+
+    freeInodeData(inode);
+    //freeInode(sb, inodeNumber);
 
     return 0;
 }
@@ -301,6 +382,21 @@ static int8_t v6_write_block(uint16_t blockNumber, void *data, size_t size) {
     return 0;
 }
 
+static uint16_t createFile(Superblock *sb, char *filename) {
+
+    return 0;
+}
+
+static uint16_t createDirectory(Superblock *sb, char *filename) {
+
+    return 0;
+}
+
+static uint16_t getTerminalInodeNumber(Superblock *sb, char *filename) {
+
+    return 0;
+}
+
 /*
  * Traverses the inode blocks and adds any available inodes to the inode list
  */
@@ -329,7 +425,7 @@ static Inode* loadInode(Superblock *sb, uint16_t inodeNumber) {
     uint16_t inodeBlockNumber, offsetInBlock;
     uint8_t blockData[512];
 
-    if (inodeNumber > sb->isize) {
+    if (inodeNumber == 0 || inodeNumber > sb->isize) {
         return NULL;
     }
 
@@ -378,6 +474,36 @@ static int8_t initInode(Inode *inode) {
     inode->actime[1] = 0;
     inode->modtime[0] = 0;
     inode->modtime[1] = 0;
+}
+
+static int8_t freeInodeData(Inode *inode) {
+
+
+
+    return 0;
+}
+
+static int8_t addAllocatedBlockToInode(Inode *inode, uint16_t blockNumber, uint16_t numBytes) {
+    uint32_t blockIndex = 0;
+    uint16_t blockData[256];
+
+    // TODO: set inode size += numBytes
+
+    if (inode->flags & FLAG_LARGE_FILE) {
+
+    } else {
+        while (blockIndex < 8) {
+            if (inode->addr[blockIndex] == 0) {
+                inode->addr[blockIndex] = blockNumber;
+                break;
+            }
+        }
+    }
+
+    uint32_t inodeSize = getFileSize(inode);
+    setFileSize(inode, inodeSize + numBytes);
+
+    return 0;
 }
 
 /*
@@ -491,6 +617,121 @@ static uint16_t getNextAllocatedBlockNumber(Inode *inode) {
     return 0;
 }
 
+/*
+ * Needs the Superblock since it may have to allocate new blocks.
+ * Seems messy, but I'm not sure if there's a better way to do that.
+ */
+static int8_t addDirectoryEntry(Superblock *sb, Inode *inode, char *filename, uint16_t inodeNumber) {
+    uint8_t blockData[BLOCK_SIZE];
+    uint16_t blockNumber;
+    uint16_t tempInodeNumber = 0;
+    char inodeFilename[15] = { 0 };
+
+    if (inodeIsDirectory(inode) == 0) {
+        return -1;
+    }
+
+    if (findDirectoryEntry(inode, filename)) {
+        // Directory already exists
+        return -1;
+    }
+
+    // First, look for an empty slot in one of the allocated blocks.
+    blockNumber = getNextAllocatedBlockNumber(inode);
+    // Copy to inodeFilename for correct padding.
+    strncpy(inodeFilename, filename, 14);
+
+    while (blockNumber != 0) {
+        v6_read_block(blockNumber, blockData, 1);
+        for (size_t i = 0; i < 32; i++) {
+            memcpy(&tempInodeNumber, &blockData[i * 16], 2);
+
+            if (tempInodeNumber == 0) {
+                memcpy(&blockData[i * 16], &inodeNumber, 2);
+                memcpy(&blockData[(i * 16) + 2], inodeFilename, 14);
+                v6_write_block(blockNumber, blockData, 1);
+                return 0;
+            }
+        }
+        blockNumber = getNextAllocatedBlockNumber(NULL);
+    }
+
+    // If there isn't one, allocate a block and add it to the inode.
+    uint16_t newBlockNumber;
+    uint8_t newBlockData[BLOCK_SIZE] = { 0 };
+    v6_alloc(sb, &newBlockNumber);
+    memcpy(&newBlockData[0], &inodeNumber, 2);
+    memcpy(&newBlockData[2], inodeFilename, 14);
+    v6_write_block(newBlockNumber, newBlockData, 1);
+    addAllocatedBlockToInode(inode, newBlockNumber, 512);
+
+    return 0;
+}
+
+static int8_t removeDirectoryEntry(Inode *inode, char *filename) {
+    uint8_t blockData[BLOCK_SIZE];
+    uint16_t blockNumber = getNextAllocatedBlockNumber(inode);
+    uint16_t inodeNumber = 0;
+    char inodeFilename[15] = { 0 };
+
+    if (inodeIsDirectory(inode) == 0) {
+        return -1;
+    }
+
+    while (blockNumber != 0) {
+        v6_read_block(blockNumber, blockData, 1);
+        for (size_t i = 0; i < 32; i++) {
+            memcpy(&inodeNumber, &blockData[i * 16], 2);
+            memcpy(inodeFilename, &blockData[(i * 16) + 2], 14);
+
+            if (inodeNumber > 0) {
+                if (strncmp(filename, inodeFilename, 14) == 0) {
+                    inodeNumber = 0;
+                    memcpy(&blockData[i * 16], &inodeNumber, 2);
+                    v6_write_block(blockNumber, blockData, 1);
+                    return 0;
+                }
+            }
+        }
+        blockNumber = getNextAllocatedBlockNumber(NULL);
+    }
+
+    return -1;
+}
+
+/*
+ * Find the inode number of the file designated by filename.
+ *
+ * If the directory could not be found, return 0.
+ */
+static uint16_t findDirectoryEntry(Inode *inode, char *filename) {
+    uint8_t blockData[BLOCK_SIZE];
+    uint16_t blockNumber = getNextAllocatedBlockNumber(inode);
+    uint16_t inodeNumber = 0;
+    char inodeFilename[15] = { 0 };
+
+    if (inodeIsDirectory(inode) == 0) {
+        return 0;
+    }
+
+    while (blockNumber != 0) {
+        v6_read_block(blockNumber, blockData, 1);
+        for (size_t i = 0; i < 32; i++) {
+            memcpy(&inodeNumber, &blockData[i * 16], 2);
+            memcpy(inodeFilename, &blockData[(i * 16) + 2], 14);
+
+            if (inodeNumber > 0) {
+                if (strncmp(filename, inodeFilename, 14) == 0) {
+                    return inodeNumber;
+                }
+            }
+        }
+        blockNumber = getNextAllocatedBlockNumber(NULL);
+    }
+
+    return 0;
+}
+
 static void convertBytesToSuperblock(uint8_t *data, Superblock *sb) {
     // I'm not sure if this notation is more or less readable than
     // just using a bunch of "memcpy"s...
@@ -546,6 +787,32 @@ static void convertInodeToBytes(Inode *inode, uint8_t *data) {
     memcpy(&data[28], inode->modtime, 4);
 }
 
+static uint16_t inodeIsDirectory(Inode *inode) {
+    if ((inode->flags & FLAG_FILE_TYPE) == FILE_TYPE_DIRECTORY) {
+        return 1;
+    }
+    return 0;
+}
+
 static size_t getBlockAddress(uint16_t blockNumber) {
     return blockNumber * 512U;
+}
+
+static uint32_t getFileSize(Inode *inode) {
+    uint32_t fileSize = 0;
+
+    if (inode->flags & FLAG_FILE_SIZE_MSB) {
+        fileSize |= 1UL << 25;
+    }
+
+    fileSize |= (inode->size0 << 16) | inode->size1;
+}
+
+static void setFileSize(Inode *inode, uint32_t fileSize) {
+    if (fileSize & (1UL << 25)) {
+        inode->flags |= FLAG_FILE_SIZE_MSB;
+    }
+
+    inode->size0 = (uint8_t) ((fileSize >> 16) & 0xFF);
+    inode->size1 = (uint16_t) fileSize;
 }

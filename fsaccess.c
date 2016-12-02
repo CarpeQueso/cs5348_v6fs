@@ -3,6 +3,8 @@
 #include "v6fs.h"
 #include <ctype.h>
 #include <stdbool.h>
+#include <string.h>
+#include <stdlib.h>
 
 #define MAXBUFFERSIZE   80
 
@@ -31,11 +33,11 @@ int main(int argc, char *argv[])
     int     valid_choice;
     char*   token;
     char*   tokens[3];
-    Superblock sb;
+    Superblock *sb;
 
     //Load the filesystem
-    v6_loadfs(argv[1], &sb);
-    //v6_loadfs("/Users/DebaImade/ClionProjects/cs5348_v6fs", &sb);
+    sb = v6_loadfs("/Users/jon/UTD/CS5348/Project_2/v6fs/test.v6fs");
+    sb = v6_initfs(5000, 400);
 
     while( exit_flag  == 0 ) {
         printf("v6fs: \n");
@@ -75,7 +77,7 @@ int main(int argc, char *argv[])
         if (isValidCommand(tokens[0], "initfs")){
             __uint32_t numBlocks = atoi(tokens[1]);
             __uint32_t numInodes = atoi(tokens[2]);
-            v6_initfs(numBlocks, numInodes, &sb);
+            v6_initfs(numBlocks, numInodes);
         }
 
         if (isValidCommand(tokens[0], "cpin")){

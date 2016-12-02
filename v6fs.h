@@ -83,6 +83,7 @@
 #define E_BLOCK_READ_FAILURE                5
 #define E_BLOCK_WRITE_FAILURE               6
 #define E_INVALID_BLOCK_NUMBER              7
+#define E_NO_SUCH_FILE                      8
 
 
 typedef struct Superblock {
@@ -120,7 +121,7 @@ extern FILE *v6FileSystem;
  *
  * sb - the variable to store the newly loaded superblock.
  */
-extern int8_t v6_loadfs(char *v6FileSystemName, Superblock *sb);
+extern Superblock * v6_loadfs(char *v6FileSystemName);
 
 /*
  * Initializes a new, empty v6 file system.
@@ -129,7 +130,7 @@ extern int8_t v6_loadfs(char *v6FileSystemName, Superblock *sb);
  * numInodes - the number of i-nodes contained within this filesystem.
  * sb - where the newly allocated superblock will be stored.
  */
-extern int8_t v6_initfs(uint16_t numBlocks, uint16_t numInodes, Superblock *sb);
+extern Superblock * v6_initfs(uint16_t numBlocks, uint16_t numInodes);
 
 
 /*

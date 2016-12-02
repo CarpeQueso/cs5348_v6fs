@@ -9,6 +9,10 @@
  */
 #define BLOCK_SIZE                          512
 
+#define MAX_BLOCKS_PER_INODE                65536
+
+#define MAX_SINGLY_INDIRECT_BLOCKS_PER_INODE 263
+
 /*
  * I-node flags bits (in octal).
  */
@@ -84,6 +88,8 @@
 #define E_BLOCK_WRITE_FAILURE               6
 #define E_INVALID_BLOCK_NUMBER              7
 #define E_NO_SUCH_FILE                      8
+#define E_ALLOCATE_FAILURE                  9
+#define E_INVALID_INDEX                     10
 
 
 typedef struct Superblock {

@@ -8,7 +8,7 @@
 FILE *v6FileSystem = NULL;
 
 
-static int8_t v6_alloc(Superblock *sb, uint16_t *blockNumber);
+static uint16_t v6_alloc(Superblock *sb);
 static int8_t v6_free(Superblock *sb, uint16_t blockNumber);
 static int8_t v6_read_block(uint16_t blockNumber, void *data, size_t size);
 static int8_t v6_write_block(uint16_t blockNumber, void *data, size_t size);
@@ -19,18 +19,23 @@ static Inode* loadInode(Superblock *sb, uint16_t inodeNumber);
 static int8_t saveInode(Superblock *sb, uint16_t inodeNumber, Inode *inode);
 static int8_t initInode(Inode *inode);
 
-static int8_t freeInodeData(Inode *inode);
+static int8_t freeInodeData(Superblock *sb, Inode *inode);
 static int8_t repopulateInodeList(Superblock *sb);
-static int8_t addAllocatedBlockToInode(Inode *inode, uint16_t blockNumber, uint16_t numBytes);
+static int8_t addAllocatedBlockToInode(Superblock *sb, Inode *inode, uint16_t numBytes, uint16_t blockNumber);
+static int8_t convertInodeToLargeFile(Superblock *sb, Inode *inode);
 static uint16_t getNextAllocatedBlockNumber(Inode *inode);
 static int8_t addDirectoryEntry(Superblock *sb, Inode *inode, char *filename, uint16_t inodeNumber);
 static int8_t removeDirectoryEntry(Inode *inode, char *filename);
 static uint16_t findDirectoryEntry(Inode *inode, char *filename);
+static uint16_t getBlockNumberAtIndex(Inode *inode, uint16_t index);
+static int8_t setBlockNumberAtIndex(Superblock *sb, Inode *inode, uint16_t blockNumber, uint16_t index);
+static uint16_t getSinglyIndirectBlockNumberAtIndex(Inode *inode, uint16_t index);
 static void convertBytesToSuperblock(uint8_t *data, Superblock *sb);
 static void convertSuperblockToBytes(Superblock* sb, uint8_t *data);
 static void convertBytesToInode(uint8_t *data, Inode *inode);
 static void convertInodeToBytes(Inode *inode, uint8_t *data);
 static uint16_t inodeIsDirectory(Inode *inode);
+static uint16_t inodeIsLargeFile(Inode *inode);
 static size_t getBlockAddress(uint16_t blockNumber);
 static uint32_t getFileSize(Inode *inode);
 static void setFileSize(Inode *inode, uint32_t fileSize);
@@ -168,10 +173,13 @@ int8_t v6_cpin(Superblock *sb, char *externalFilename, char *v6Filename) {
 
     // Allocate blocks and add to i-node sequentially from external file
     while (feof(f) == 0) {
-        v6_alloc(sb, blockNumber);
+        blockNumber = v6_alloc(sb);
+        if (blockNumber == 0) {
+            return E_ALLOCATE_FAILURE;
+        }
         size_t numBytes = fread(data, 1, BLOCK_SIZE, f);
         v6_write_block(blockNumber, data, 1);
-        addAllocatedBlockToInode(inode, blockNumber, (uint16_t) numBytes);
+        addAllocatedBlockToInode(NULL, inode, (uint16_t) numBytes, blockNumber);
     }
 
     return 0;
@@ -240,7 +248,7 @@ int8_t v6_rm(Superblock *sb, char *v6Filename) {
         return E_NO_SUCH_FILE;
     }
 
-    freeInodeData(inode);
+    freeInodeData(sb, inode);
     //freeInode(sb, inodeNumber);
 
     return 0;
@@ -264,12 +272,10 @@ int8_t v6_quit(Superblock *sb) {
 
 /*
  * Allocates a new block number where the v6 file system can write.
- * This new block number is stored in *blockNumber. blockNumber will
- * not be changed unless alloc is successful (returns 0).
  *
- * Returns 0 if allocation successful.
+ * Returns 0 if a block could not be allocated.
  */
-static int8_t v6_alloc(Superblock *sb, uint16_t *blockNumber) {
+static uint16_t v6_alloc(Superblock *sb) {
     uint16_t freeBlockNumber;
     // Stores data read from the next free list block.
     // Shouldn't be allocated unless we need it.
@@ -286,7 +292,7 @@ static int8_t v6_alloc(Superblock *sb, uint16_t *blockNumber) {
 
         if (blockReadSuccess != 0) {
             free(blockData);
-            return blockReadSuccess;
+            return 0;
         }
 
         sb->nfree = blockData[0];
@@ -295,9 +301,7 @@ static int8_t v6_alloc(Superblock *sb, uint16_t *blockNumber) {
         free(blockData);
     }
 
-    *blockNumber = freeBlockNumber;
-
-    return 0;
+    return freeBlockNumber;
 }
 
 /*
@@ -476,32 +480,100 @@ static int8_t initInode(Inode *inode) {
     inode->modtime[1] = 0;
 }
 
-static int8_t freeInodeData(Inode *inode) {
+static int8_t freeInodeData(Superblock *sb, Inode *inode) {
+    size_t blockIndex = 0;
+    uint16_t nextAllocatedBlockNumber = getNextAllocatedBlockNumber(inode);
 
+    while (nextAllocatedBlockNumber != 0) {
+        v6_free(sb, nextAllocatedBlockNumber);
 
+        nextAllocatedBlockNumber = getNextAllocatedBlockNumber(NULL);
+    }
+
+    if (inodeIsLargeFile(inode)) {
+        uint16_t singlyIndirectBlockNumber;
+        for (size_t i = 0; i < MAX_SINGLY_INDIRECT_BLOCKS_PER_INODE; i++) {
+            singlyIndirectBlockNumber = getSinglyIndirectBlockNumberAtIndex(inode, (uint16_t) i);
+            if (singlyIndirectBlockNumber != 0) {
+                v6_free(sb, singlyIndirectBlockNumber);
+            }
+        }
+
+        if (inode->addr[7] != 0) {
+            v6_free(sb, inode->addr[7]);
+        }
+    }
 
     return 0;
 }
 
-static int8_t addAllocatedBlockToInode(Inode *inode, uint16_t blockNumber, uint16_t numBytes) {
-    uint32_t blockIndex = 0;
-    uint16_t blockData[256];
+/*
+ * Adds the block to the first available position.
+ * This function will create indirect blocks as necessary.
+ */
+static int8_t addAllocatedBlockToInode(Superblock *sb, Inode *inode, uint16_t numBytes, uint16_t blockNumber) {
+    size_t addrIndex = 0;
 
-    // TODO: set inode size += numBytes
+    if (inodeIsLargeFile(inode)) {
+        uint16_t index = 0;
+        uint16_t blockNumberAtIndex = 0;
 
-    if (inode->flags & FLAG_LARGE_FILE) {
-
-    } else {
-        while (blockIndex < 8) {
-            if (inode->addr[blockIndex] == 0) {
-                inode->addr[blockIndex] = blockNumber;
+        while (index < MAX_BLOCKS_PER_INODE) {
+            blockNumberAtIndex = getBlockNumberAtIndex(inode, index);
+            if (blockNumberAtIndex == 0) {
+                setBlockNumberAtIndex(sb, inode, blockNumber, index);
                 break;
             }
+            index++;
+        }
+    } else {
+        while (addrIndex < 8) {
+            if (inode->addr[addrIndex] == 0) {
+                inode->addr[addrIndex] = blockNumber;
+                break;
+            }
+            addrIndex++;
+        }
+        if (addrIndex == 8) {
+            // Could not add to i-node. The i-node is too small.
+            convertInodeToLargeFile(sb, inode);
+            return addAllocatedBlockToInode(sb, inode, numBytes, blockNumber);
         }
     }
 
     uint32_t inodeSize = getFileSize(inode);
     setFileSize(inode, inodeSize + numBytes);
+
+    return 0;
+}
+
+// TODO: Use setBlockNumberAtIndex function
+static int8_t convertInodeToLargeFile(Superblock *sb, Inode *inode) {
+    // The block numbers that are initially stored in inode->addr[0-7]
+    uint16_t smallFileBlockNumbers[8];
+    uint16_t newIndirectBlockNumber;
+    uint16_t indirectBlockData[256] = { 0 };
+
+    if (inodeIsLargeFile(inode)) {
+        // i-node is already a large file. Bam, done.
+        return 0;
+    }
+
+    newIndirectBlockNumber = v6_alloc(sb);
+
+    if (newIndirectBlockNumber == 0) {
+        return E_ALLOCATE_FAILURE;
+    }
+
+    for (size_t i = 0; i < 8; i++) {
+        smallFileBlockNumbers[i] = inode->addr[i];
+        inode->addr[i] = 0;
+    }
+
+    memcpy(indirectBlockData, smallFileBlockNumbers, 8 * sizeof(uint16_t));
+    v6_write_block(newIndirectBlockNumber, indirectBlockData, 2);
+    inode->addr[0] = newIndirectBlockNumber;
+    inode->flags |= FLAG_LARGE_FILE;
 
     return 0;
 }
@@ -512,102 +584,41 @@ static int8_t addAllocatedBlockToInode(Inode *inode, uint16_t blockNumber, uint1
 static uint16_t getNextAllocatedBlockNumber(Inode *inode) {
     static Inode *persistentInode;
     static uint16_t isLargeFile;
-    // Note: In this file system, 32 bit type is enough to hold our max number
-    // of bytes in a file (32MB). If larger files are allowed, increase
-    // the width of byteOffset.
-    // byteOffset holds the offset of the *current* call to getNextAllocatedBlockNumber
-    // and is incremented by the block size after the next block has been found.
-    static uint32_t blockIndex;
-
+    static uint16_t blockIndex;
 
     if (inode == NULL) {
         if (persistentInode == NULL) {
+            // No i-node was ever given.
             return 0;
         }
     } else {
         // Set static references and start from beginning of i-node
         persistentInode = inode;
-        isLargeFile = inode->flags & FLAG_LARGE_FILE;
+        isLargeFile = inodeIsLargeFile(inode);
         blockIndex = 0;
     }
 
-    uint16_t nextAddressIndex = 0;
-    uint16_t nextSinglyIndirectBlockNumber = 0;
-    uint16_t singlyIndirectBlockData[256] = { 0 };
-    uint16_t doublyIndirectBlockData[256] = { 0 };
+    uint16_t blockNumber;
 
     if (isLargeFile) {
-        nextAddressIndex = blockIndex / 256;
-
-        if (nextAddressIndex < 7) {
-            // Singly indirect blocks here
-            while (nextAddressIndex < 7) {
-                nextSinglyIndirectBlockNumber = persistentInode->addr[nextAddressIndex];
-                if (nextSinglyIndirectBlockNumber != 0) {
-                    // Valid indirect block number
-                    v6_read_block(nextSinglyIndirectBlockNumber, singlyIndirectBlockData, 2);
-                    uint16_t singlyIndirectBlockIndex = blockIndex % 256;
-                    while (singlyIndirectBlockIndex < 256) {
-                        uint16_t blockNumber = singlyIndirectBlockData[singlyIndirectBlockIndex];
-                        blockIndex += 1;
-                        if (blockNumber != 0) {
-                            // Valid block number
-                            return blockNumber;
-                        } else {
-                            singlyIndirectBlockIndex++;
-                        }
-                    }
-                } else {
-                    blockIndex += 256;
-                    nextAddressIndex++;
-                }
-            }
-            // If we reach this point, the only place left to check is the doubly indirect block.
-            // For simplicity's sake, make the recursive call since it should only result in one
-            // level of recursion.
-            return getNextAllocatedBlockNumber(NULL);
-        } else {
-            if (blockIndex >= 1UL << 25) {
-                // Larger than allowed 32MB file size.
-                return 0;
-            }
-            // Doubly indirect block
-            if (persistentInode->addr[nextAddressIndex] != 0) {
-                v6_read_block(persistentInode->addr[nextAddressIndex], doublyIndirectBlockData, 2);
-                uint16_t doublyIndirectBlockIndex = blockIndex / 256 - 7;
-                while (doublyIndirectBlockIndex < 256) {
-                    nextSinglyIndirectBlockNumber = doublyIndirectBlockData[doublyIndirectBlockIndex];
-                    if (nextSinglyIndirectBlockNumber != 0) {
-                        v6_read_block(nextSinglyIndirectBlockNumber, singlyIndirectBlockData, 2);
-                        uint16_t singlyIndirectBlockIndex = blockIndex % 256;
-                        while (singlyIndirectBlockIndex < 256) {
-                            uint16_t blockNumber = singlyIndirectBlockData[singlyIndirectBlockIndex];
-                            blockIndex += 1;
-                            if (blockNumber != 0) {
-                                // Valid block number
-                                return blockNumber;
-                            } else {
-                                singlyIndirectBlockIndex++;
-                            }
-                        }
-                    } else {
-                        blockIndex += 256;
-                        doublyIndirectBlockIndex++;
-                    }
-                }
+        while (blockIndex < MAX_BLOCKS_PER_INODE) {
+            blockNumber = getBlockNumberAtIndex(persistentInode, blockIndex);
+            blockIndex += 1;
+            if (blockNumber != 0) {
+                return blockNumber;
             }
         }
     } else {
         if (blockIndex >= 8) {
             return 0;
-        } else {
-            while (blockIndex < 8) {
-                uint16_t blockNumber = persistentInode->addr[blockIndex];
-                blockIndex += 1;
-                if (blockNumber != 0) {
-                    // We have a valid block number
-                    return blockNumber;
-                }
+        }
+
+        while (blockIndex < 8) {
+            uint16_t blockNumber = getBlockNumberAtIndex(persistentInode, blockIndex);
+            blockIndex += 1;
+            if (blockNumber != 0) {
+                // We have a valid block number
+                return blockNumber;
             }
         }
     }
@@ -659,11 +670,17 @@ static int8_t addDirectoryEntry(Superblock *sb, Inode *inode, char *filename, ui
     // If there isn't one, allocate a block and add it to the inode.
     uint16_t newBlockNumber;
     uint8_t newBlockData[BLOCK_SIZE] = { 0 };
-    v6_alloc(sb, &newBlockNumber);
+
+    newBlockNumber = v6_alloc(sb);
+
+    if (newBlockNumber == 0) {
+        return E_ALLOCATE_FAILURE;
+    }
+
     memcpy(&newBlockData[0], &inodeNumber, 2);
     memcpy(&newBlockData[2], inodeFilename, 14);
     v6_write_block(newBlockNumber, newBlockData, 1);
-    addAllocatedBlockToInode(inode, newBlockNumber, 512);
+    addAllocatedBlockToInode(NULL, inode, 512, newBlockNumber);
 
     return 0;
 }
@@ -732,6 +749,166 @@ static uint16_t findDirectoryEntry(Inode *inode, char *filename) {
     return 0;
 }
 
+static uint16_t getBlockNumberAtIndex(Inode *inode, uint16_t index) {
+    // The block number to return.
+    uint16_t blockNumber = 0;
+
+    if (inodeIsLargeFile(inode)) {
+        size_t addrIndex = index / 256U;
+
+        if (index >= MAX_BLOCKS_PER_INODE) {
+            return 0;
+        }
+
+        if (addrIndex < 7) {
+            if (inode->addr[addrIndex] == 0) {
+                return 0;
+            }
+
+            uint16_t singlyIndirectBlockNumber = inode->addr[addrIndex];
+            uint16_t singlyIndirectBlockData[256];
+            size_t indexInSinglyIndirectBlock = index % 256U;
+            v6_read_block(singlyIndirectBlockNumber, singlyIndirectBlockData, 2);
+
+            blockNumber = singlyIndirectBlockData[indexInSinglyIndirectBlock];
+        } else {
+            addrIndex = 7;
+            if (inode->addr[addrIndex] == 0) {
+                return 0;
+            }
+
+            // Maybe using 7 explicitly and not addrIndex is better?
+            uint16_t doublyIndirectBlockNumber = inode->addr[addrIndex];
+            uint16_t doublyIndirectBlockData[256];
+            size_t indexInDoublyIndirectBlock = index / 256U - 7U;
+
+            v6_read_block(doublyIndirectBlockNumber, doublyIndirectBlockData, 2);
+
+            uint16_t singlyIndirectBlockNumber = doublyIndirectBlockData[indexInDoublyIndirectBlock];
+            uint16_t singlyIndirectBlockData[256];
+            size_t indexInSinglyIndirectBlock = index % 256U;
+
+            if (singlyIndirectBlockNumber == 0) {
+                return 0;
+            }
+
+            v6_read_block(singlyIndirectBlockNumber, singlyIndirectBlockData, 2);
+
+            blockNumber = singlyIndirectBlockData[indexInSinglyIndirectBlock];
+        }
+    } else {
+        if (index > 7) {
+            return 0;
+        }
+        blockNumber = inode->addr[index];
+    }
+
+    return blockNumber;
+}
+
+static int8_t setBlockNumberAtIndex(Superblock *sb, Inode *inode, uint16_t blockNumber, uint16_t index) {
+    if (inodeIsLargeFile(inode)) {
+        size_t addrIndex = index / 256U;
+
+        if (index >= MAX_BLOCKS_PER_INODE) {
+            return E_INVALID_INDEX;
+        }
+
+        if (addrIndex < 7) {
+            uint16_t singlyIndirectBlockData[256] = { 0 };
+
+            if (inode->addr[addrIndex] == 0) {
+                // Allocate a singly indirect block
+                uint16_t newSinglyIndirectBlockNumber = v6_alloc(sb);
+
+                if (newSinglyIndirectBlockNumber == 0) {
+                    return E_ALLOCATE_FAILURE;
+                }
+
+                v6_write_block(newSinglyIndirectBlockNumber, singlyIndirectBlockData, 2);
+                inode->addr[addrIndex] = newSinglyIndirectBlockNumber;
+            }
+
+            uint16_t singlyIndirectBlockNumber = inode->addr[addrIndex];
+            size_t indexInSinglyIndirectBlock = index % 256U;
+
+            v6_read_block(singlyIndirectBlockNumber, singlyIndirectBlockData, 2);
+            singlyIndirectBlockData[indexInSinglyIndirectBlock] = blockNumber;
+            v6_write_block(singlyIndirectBlockNumber, singlyIndirectBlockData, 2);
+        } else {
+            addrIndex = 7;
+            uint16_t doublyIndirectBlockData[256] = { 0 };
+            uint16_t singlyIndirectBlockData[256] = { 0 };
+
+            if (inode->addr[addrIndex] == 0) {
+                uint16_t newDoublyIndirectBlockNumber = v6_alloc(sb);
+
+                if (newDoublyIndirectBlockNumber == 0) {
+                    return E_ALLOCATE_FAILURE;
+                }
+
+                v6_write_block(newDoublyIndirectBlockNumber, doublyIndirectBlockData, 2);
+                inode->addr[addrIndex] = newDoublyIndirectBlockNumber;
+            }
+
+            uint16_t doublyIndirectBlockNumber = inode->addr[addrIndex];
+            size_t indexInDoublyIndirectBlock = index / 256U - 7U;
+
+            v6_read_block(doublyIndirectBlockNumber, doublyIndirectBlockData, 2);
+
+            if (doublyIndirectBlockData[indexInDoublyIndirectBlock] == 0) {
+                uint16_t newSinglyIndirectBlockNumber = v6_alloc(sb);
+
+                if (newSinglyIndirectBlockNumber == 0) {
+                    return E_ALLOCATE_FAILURE;
+                }
+
+                v6_write_block(newSinglyIndirectBlockNumber, singlyIndirectBlockData, 2);
+
+                doublyIndirectBlockData[indexInDoublyIndirectBlock] = newSinglyIndirectBlockNumber;
+                v6_write_block(doublyIndirectBlockNumber, doublyIndirectBlockData, 2);
+            }
+
+            uint16_t singlyIndirectBlockNumber = doublyIndirectBlockData[indexInDoublyIndirectBlock];
+            size_t indexInSinglyIndirectBlock = index % 256U;
+
+            v6_read_block(singlyIndirectBlockNumber, singlyIndirectBlockData, 2);
+            singlyIndirectBlockData[indexInSinglyIndirectBlock] = blockNumber;
+            v6_write_block(singlyIndirectBlockNumber, singlyIndirectBlockData, 2);
+        }
+    } else {
+        if (index > 7) {
+            return E_INVALID_INDEX;
+        }
+        inode->addr[index] = blockNumber;
+    }
+
+    return 0;
+}
+
+static uint16_t getSinglyIndirectBlockNumberAtIndex(Inode *inode, uint16_t index) {
+    if (inodeIsLargeFile(inode)) {
+        if (index >= MAX_SINGLY_INDIRECT_BLOCKS_PER_INODE) {
+            return 0;
+        }
+
+        if (index < 7) {
+            return inode->addr[index];
+        } else {
+            if (inode->addr[7] == 0) {
+                return 0;
+            } else {
+                uint16_t doublyIndirectBlockData[256];
+                v6_read_block(inode->addr[7], doublyIndirectBlockData, 2);
+                return doublyIndirectBlockData[index - 7];
+            }
+        }
+    } else {
+        // I-node is not a large file. There are no singly indirect blocks.
+        return 0;
+    }
+}
+
 static void convertBytesToSuperblock(uint8_t *data, Superblock *sb) {
     // I'm not sure if this notation is more or less readable than
     // just using a bunch of "memcpy"s...
@@ -789,6 +966,13 @@ static void convertInodeToBytes(Inode *inode, uint8_t *data) {
 
 static uint16_t inodeIsDirectory(Inode *inode) {
     if ((inode->flags & FLAG_FILE_TYPE) == FILE_TYPE_DIRECTORY) {
+        return 1;
+    }
+    return 0;
+}
+
+static uint16_t inodeIsLargeFile(Inode *inode) {
+    if (inode->flags & FLAG_LARGE_FILE) {
         return 1;
     }
     return 0;

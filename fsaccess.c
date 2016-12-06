@@ -36,7 +36,8 @@ int main(int argc, char *argv[])
     Superblock *sb;
 
     //Load the filesystem
-    sb = v6_loadfs(argv[1]);
+    //sb = v6_loadfs(argv[1]);
+    sb = v6_loadfs("/Users/jon/UTD/CS5348/Project_2/v6fs/test.v6fs");
 
     while( exit_flag  == 0 ) {
         printf("v6fs: \n");
@@ -80,7 +81,8 @@ int main(int argc, char *argv[])
         }
 
         if (isValidCommand(tokens[0], "cpin")){
-            v6_cpin(sb, tokens[1], tokens[2]);
+            int8_t cpinResult = v6_cpin(sb, tokens[1], tokens[2]);
+            printf("Res: %d\n", cpinResult);
         }
 
         if (isValidCommand(tokens[0], "cpout")){
@@ -97,19 +99,20 @@ int main(int argc, char *argv[])
 
         if (isValidCommand(tokens[0], "q")){
             v6_quit(sb);
+            break;
         }
 
-        valid_choice = 0;
-        while( valid_choice == 0 ) {
-            printf("Continue (Y/N)?\n");
-            scanf(" %c", &ch );
-            ch = toupper( ch );
-            if((ch == 'Y') || (ch == 'N') )
-                valid_choice = 1;
-            else
-                printf("\007Error: Invalid choice\n");
-            cleartoendofline();
-        }
-        if( ch == 'N' ) exit_flag = 1;
+//        valid_choice = 0;
+//        while( valid_choice == 0 ) {
+//            printf("Continue (Y/N)?\n");
+//            scanf(" %c", &ch );
+//            ch = toupper( ch );
+//            if((ch == 'Y') || (ch == 'N') )
+//                valid_choice = 1;
+//            else
+//                printf("\007Error: Invalid choice\n");
+//            cleartoendofline();
+//        }
+//        if( ch == 'N' ) exit_flag = 1;
     }
 }

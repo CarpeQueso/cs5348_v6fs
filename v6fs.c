@@ -12,14 +12,14 @@ static uint16_t v6_alloc(Superblock *sb);
 static int8_t v6_free(Superblock *sb, uint16_t blockNumber);
 static int8_t v6_read_block(uint16_t blockNumber, void *data, size_t size);
 static int8_t v6_write_block(uint16_t blockNumber, void *data, size_t size);
-static uint16_t createFile(Superblock *sb, char *filename);
-static uint16_t createDirectory(Superblock *sb, char *filename);
+static uint16_t createFile(Superblock *sb, char *filePath, uint16_t fileType);
+static uint16_t createDirectory(Superblock *sb, char *directoryPath);
 static uint16_t getTerminalInodeNumber(Superblock *sb, char *filename);
-static Inode* loadInode(Superblock *sb, uint16_t inodeNumber);
-static int8_t saveInode(Superblock *sb, uint16_t inodeNumber, Inode *inode);
+static Inode* inodeLoad(Superblock *sb, uint16_t inodeNumber);
+static int8_t inodeSave(Superblock *sb, uint16_t inodeNumber, Inode *inode);
 static uint16_t getNewInodeNumber(Superblock *sb);
-static int8_t freeInode(Superblock *sb, uint16_t inodeNumber);
-static int8_t initInode(Inode *inode);
+static int8_t inodeFree(Superblock *sb, uint16_t inodeNumber);
+static int8_t inodeInit(Inode *inode);
 static int8_t repopulateInodeList(Superblock *sb);
 static int8_t addAllocatedBlockToInode(Superblock *sb, Inode *inode, uint16_t numBytes, uint16_t blockNumber);
 static int8_t convertInodeToLargeFile(Superblock *sb, Inode *inode);
@@ -39,6 +39,7 @@ static uint16_t inodeIsLargeFile(Inode *inode);
 static size_t getBlockAddress(uint16_t blockNumber);
 static uint32_t getFileSize(Inode *inode);
 static void setFileSize(Inode *inode, uint32_t fileSize);
+static char** tokenizeFilePath(char *filePath, size_t *numPathItems);
 
 
 Superblock * v6_loadfs(char *v6FileSystemName) {
@@ -129,13 +130,13 @@ Superblock * v6_initfs(uint16_t numBlocks, uint16_t numInodes) {
     // no matter what the number specified was)
     Inode inodes[16];
     for (size_t i = 0; i < 16; i++) {
-        initInode(&inodes[i]);
+        inodeInit(&inodes[i]);
     }
     inodes[0].flags = FLAG_INODE_ALLOCATED | FILE_TYPE_DIRECTORY | FLAG_OWNER_PERMISSIONS
                       | FLAG_GROUP_READ | FLAG_GROUP_EXECUTE | FLAG_OTHER_READ | FLAG_OTHER_EXECUTE;
     v6_write_block(2, inodes, 32);
     // Reset inode so all nodes in this group are cleared for setup of all other inode blocks
-    initInode(&inodes[0]);
+    inodeInit(&inodes[0]);
 
     // Write remaining blocks in a loop
     for (size_t blockNum = 3; blockNum < numInodeBlocks + 2; blockNum++) {
@@ -145,18 +146,18 @@ Superblock * v6_initfs(uint16_t numBlocks, uint16_t numInodes) {
     repopulateInodeList(sb);
 
     // Init root i-node
-    Inode *inode = loadInode(sb, 1);
+    Inode *inode = inodeLoad(sb, 1);
 
     addDirectoryEntry(sb, inode, ".", 1);
-    addDirectoryEntry(sb, inode, "..", 0);
+    addDirectoryEntry(sb, inode, "..", 1);
 
-    saveInode(sb, inode, 1);
+    inodeSave(sb, 1, inode);
 
     return sb;
 }
 
-int8_t v6_cpin(Superblock *sb, char *externalFilename, char *v6Filename) {
-    FILE *f = fopen(externalFilename, "r");
+int8_t v6_cpin(Superblock *sb, char *externalFilePath, char *v6FilePath) {
+    FILE *f = fopen(externalFilePath, "r");
     Inode *inode;
     uint16_t inodeNumber;
     uint16_t blockNumber;
@@ -168,8 +169,8 @@ int8_t v6_cpin(Superblock *sb, char *externalFilename, char *v6Filename) {
 
     // Create i-node for the new file and any new directory i-nodes leading
     // up to the file location.
-    inodeNumber = createFile(sb, v6Filename);
-    inode = loadInode(sb, inodeNumber);
+    inodeNumber = createFile(sb, v6FilePath, FILE_TYPE_PLAIN_FILE);
+    inode = inodeLoad(sb, inodeNumber);
 
     // Allocate blocks and add to i-node sequentially from external file
     while (feof(f) == 0) {
@@ -179,37 +180,40 @@ int8_t v6_cpin(Superblock *sb, char *externalFilename, char *v6Filename) {
         }
         size_t numBytes = fread(data, 1, BLOCK_SIZE, f);
         v6_write_block(blockNumber, data, 1);
-        addAllocatedBlockToInode(NULL, inode, (uint16_t) numBytes, blockNumber);
+        addAllocatedBlockToInode(sb, inode, (uint16_t) numBytes, blockNumber);
     }
+
+    inodeSave(sb, inodeNumber, inode);
 
     return 0;
 }
 
-int8_t v6_cpout(Superblock *sb, char *v6Filename, char *externalFilename) {
-    FILE *f = fopen(externalFilename, "w");
+int8_t v6_cpout(Superblock *sb, char *v6FilePath, char *externalFilePath) {
+    FILE *f;
     Inode *inode;
     uint16_t inodeNumber;
     uint32_t remainingBytes;
     uint16_t blockNumber;
     uint8_t data[BLOCK_SIZE] = { 0 };
 
-    if (f == NULL) {
-        return E_FILE_OPEN_FAILURE;
+    inodeNumber = getTerminalInodeNumber(sb, v6FilePath);
+
+    if (inodeNumber == 0) {
+        return E_NO_SUCH_FILE;
     }
 
-    // Create i-node for the new file and any new directory i-nodes leading
-    // up to the file location.
-    inodeNumber = getTerminalInodeNumber(sb, v6Filename);
-    inode = loadInode(sb, inodeNumber);
+    inode = inodeLoad(sb, inodeNumber);
 
-    if (inode == NULL) {
-        return E_NO_SUCH_FILE;
+    f = fopen(externalFilePath, "w");
+
+    if (f == NULL) {
+        free(inode);
+        return E_FILE_OPEN_FAILURE;
     }
 
     remainingBytes = getFileSize(inode);
     blockNumber = getNextAllocatedBlockNumber(inode);
 
-    // Allocate blocks and add to i-node sequentially from external file
     while (remainingBytes > 0) {
         v6_read_block(blockNumber, data, 1);
         if (remainingBytes >= 512) {
@@ -222,13 +226,15 @@ int8_t v6_cpout(Superblock *sb, char *v6Filename, char *externalFilename) {
         getNextAllocatedBlockNumber(NULL);
     }
 
+    fclose(f);
+
     return 0;
 }
 
-int8_t v6_mkdir(Superblock *sb, char *v6DirectoryName) {
+int8_t v6_mkdir(Superblock *sb, char *v6DirectoryPath) {
     uint16_t inodeNumber;
 
-    inodeNumber = createDirectory(sb, v6DirectoryName);
+    inodeNumber = createFile(sb, v6DirectoryPath, FILE_TYPE_DIRECTORY);
 
     if (inodeNumber == 0) {
         return -1;
@@ -236,16 +242,46 @@ int8_t v6_mkdir(Superblock *sb, char *v6DirectoryName) {
     return 0;
 }
 
-int8_t v6_rm(Superblock *sb, char *v6Filename) {
-    uint16_t inodeNumber;
+int8_t v6_rm(Superblock *sb, char *v6FilePath) {
+    char **filePathTokens;
+    size_t numTokens = 0;
+    Inode *previousInode = inodeLoad(sb, 1);
+    Inode *inode = NULL;
+    uint16_t inodeNumber = 0, previousInodeNumber = 1;
+    uint16_t createdLastLoop = 0;
 
-    inodeNumber = getTerminalInodeNumber(sb, v6Filename);
+    filePathTokens = tokenizeFilePath(v6FilePath, &numTokens);
 
-    if (inodeNumber == 0) {
-        return E_NO_SUCH_FILE;
+    for (size_t i = 0; i < numTokens - 1; i++) {
+        inodeNumber = findDirectoryEntry(previousInode, filePathTokens[i]);
+        if (inodeNumber == 0) {
+            if (inode != NULL) {
+                free(inode);
+            }
+            free(previousInode);
+            return E_NO_SUCH_FILE;
+        }
+
+        inode = inodeLoad(sb, inodeNumber);
+
+        free(previousInode);
+        previousInode = inode;
+        previousInodeNumber = inodeNumber;
     }
 
-    freeInode(sb, inodeNumber);
+    inodeNumber = findDirectoryEntry(previousInode, filePathTokens[numTokens - 1]);
+
+    if (inodeNumber == 0) {
+        free(previousInode);
+        free(inode);
+        return E_NO_SUCH_FILE;
+    } else {
+        // File already exists
+        removeDirectoryEntry(previousInode, filePathTokens[numTokens - 1]);
+        inodeFree(sb, inodeNumber);
+    }
+
+    inodeFree(sb, inodeNumber);
 
     return 0;
 }
@@ -347,17 +383,16 @@ static int8_t v6_free(Superblock *sb, uint16_t blockNumber) {
  * returns 0 if the entire block could be read
  */
 static int8_t v6_read_block(uint16_t blockNumber, void *data, size_t size) {
-    size_t numBytesRead;
-    size_t numElementsToRead = BLOCK_SIZE / size;
-    size_t expectedBytesRead = numElementsToRead * size;
+    size_t numElementsRead;
+    size_t expectedElementsToRead = BLOCK_SIZE / size;
 
     if (fseek(v6FileSystem, getBlockAddress(blockNumber), SEEK_SET) != 0) {
         return E_SEEK_FAILURE;
     }
 
-    numBytesRead = fread(data, size, numElementsToRead, v6FileSystem);
+    numElementsRead = fread(data, size, expectedElementsToRead, v6FileSystem);
 
-    if (numBytesRead < expectedBytesRead) {
+    if (numElementsRead < expectedElementsToRead) {
         return E_BLOCK_READ_FAILURE;
     }
 
@@ -382,33 +417,93 @@ static int8_t v6_write_block(uint16_t blockNumber, void *data, size_t size) {
     return 0;
 }
 
-static uint16_t createFile(Superblock *sb, char *filename) {
+static uint16_t createFile(Superblock *sb, char *filePath, uint16_t fileType) {
+    char **filePathTokens;
+    size_t numTokens = 0;
+    Inode *previousInode = inodeLoad(sb, 1);
+    Inode *inode = NULL;
+    uint16_t inodeNumber = 0, previousInodeNumber = 1;
+    uint16_t createdLastLoop = 0;
 
+    filePathTokens = tokenizeFilePath(filePath, &numTokens);
 
-    return 0;
+    for (size_t i = 0; i < numTokens - 1; i++) {
+        inodeNumber = findDirectoryEntry(previousInode, filePathTokens[i]);
+
+        if (inodeNumber == 0) {
+            // Directory does not exist. Create.
+            inodeNumber = getNewInodeNumber(sb);
+            inode = inodeLoad(sb, inodeNumber);
+            inode->flags |= FLAG_INODE_ALLOCATED | FILE_TYPE_DIRECTORY;
+
+            addDirectoryEntry(sb, inode, ".", inodeNumber);
+            addDirectoryEntry(sb, inode, "..", previousInodeNumber);
+
+            inodeSave(sb, inodeNumber, inode);
+
+            // Add entry to previous node
+            addDirectoryEntry(sb, previousInode, filePathTokens[i], inodeNumber);
+
+            inodeSave(sb, previousInodeNumber, previousInode);
+        } else {
+            inode = inodeLoad(sb, inodeNumber);
+        }
+
+        free(previousInode);
+        previousInode = inode;
+        previousInodeNumber = inodeNumber;
+    }
+
+    inodeNumber = findDirectoryEntry(previousInode, filePathTokens[numTokens - 1]);
+
+    if (inodeNumber == 0) {
+        // Create the new file.
+        inodeNumber = getNewInodeNumber(sb);
+        inode = inodeLoad(sb, inodeNumber);
+        inode->flags |= FLAG_INODE_ALLOCATED | fileType;
+
+        if (fileType == FILE_TYPE_DIRECTORY) {
+            addDirectoryEntry(sb, inode, ".", inodeNumber);
+            addDirectoryEntry(sb, inode, "..", previousInodeNumber);
+        }
+        inodeSave(sb, inodeNumber, inode);
+
+        addDirectoryEntry(sb, previousInode, filePathTokens[numTokens - 1], inodeNumber);
+        inodeSave(sb, previousInodeNumber, previousInode);
+    } else {
+        // File already exists
+        return 0;
+    }
+
+    return inodeNumber;
 }
 
-static uint16_t createDirectory(Superblock *sb, char *filename) {
-
-    return 0;
-}
 /*
  * Traverses inodes along a specified path, returning the inode number of the file
  */
 static uint16_t getTerminalInodeNumber(Superblock *sb, char *filename) {
     char* filePathToken = strtok(filename, "/");
     char delim[] = "/\0";
-    Inode *root = loadInode(&sb, 1);
+    Inode *root = inodeLoad(sb, 1);
+    Inode *nextInode;
     uint16_t terminalInodeNumber;
 
     terminalInodeNumber = findDirectoryEntry(root, filePathToken);
+    filePathToken = strtok(NULL, delim);
 
     while(filePathToken != NULL) {
-        filePathToken = strtok(NULL, delim);
-        Inode *nextInode = loadInode(&sb, terminalInodeNumber);
+        nextInode = inodeLoad(sb, terminalInodeNumber);
         terminalInodeNumber = findDirectoryEntry(nextInode, filePathToken);
+        if (terminalInodeNumber == 0) {
+            free(nextInode);
+            free(root);
+            return 0;
+        }
+        filePathToken = strtok(NULL, delim);
     }
 
+    free(nextInode);
+    free(root);
     return terminalInodeNumber;
 }
 
@@ -435,12 +530,12 @@ static int8_t repopulateInodeList(Superblock *sb) {
     return 0;
 }
 
-static Inode* loadInode(Superblock *sb, uint16_t inodeNumber) {
+static Inode* inodeLoad(Superblock *sb, uint16_t inodeNumber) {
     Inode *inode;
     uint16_t inodeBlockNumber, offsetInBlock;
     uint8_t blockData[512];
 
-    if (inodeNumber == 0 || inodeNumber > sb->isize) {
+    if (inodeNumber == 0 || inodeNumber > sb->isize * 16) {
         return NULL;
     }
 
@@ -456,11 +551,11 @@ static Inode* loadInode(Superblock *sb, uint16_t inodeNumber) {
     return inode;
 }
 
-static int8_t saveInode(Superblock *sb, uint16_t inodeNumber, Inode *inode) {
+static int8_t inodeSave(Superblock *sb, uint16_t inodeNumber, Inode *inode) {
     uint16_t inodeBlockNumber, offsetInBlock;
     uint8_t blockData[512];
 
-    if (inodeNumber > sb->isize) {
+    if (inodeNumber > sb->isize * 16) {
         return -1;
     }
 
@@ -475,7 +570,7 @@ static int8_t saveInode(Superblock *sb, uint16_t inodeNumber, Inode *inode) {
     return 0;
 }
 
-static int8_t initInode(Inode *inode) {
+static int8_t inodeInit(Inode *inode) {
     inode->flags = 0;
     inode->nlinks = 0;
     inode->uid = 0;
@@ -509,13 +604,13 @@ static uint16_t getNewInodeNumber(Superblock *sb){
     return newInodeNumber;
 }
 
-static int8_t freeInode(Superblock *sb, uint16_t inodeNumber) {
+static int8_t inodeFree(Superblock *sb, uint16_t inodeNumber) {
     if (inodeNumber < 1 || inodeNumber > sb->isize * 16) {
         return E_INVALID_INODE_NUMBER;
     }
 
     size_t blockIndex = 0;
-    Inode *inode = loadInode(sb, inodeNumber);
+    Inode *inode = inodeLoad(sb, inodeNumber);
     uint16_t nextAllocatedBlockNumber = getNextAllocatedBlockNumber(inode);
 
     // Free i-node data
@@ -540,8 +635,8 @@ static int8_t freeInode(Superblock *sb, uint16_t inodeNumber) {
     }
 
     // Deallocate i-node
-    initInode(inode);
-    saveInode(sb, inodeNumber, inode);
+    inodeInit(inode);
+    inodeSave(sb, inodeNumber, inode);
 
     return 0;
 }
@@ -789,6 +884,7 @@ static uint16_t findDirectoryEntry(Inode *inode, char *filename) {
 }
 
 static uint16_t getBlockNumberAtIndex(Inode *inode, uint16_t index) {
+    static Inode *lastInode = NULL;
     // The block number to return.
     uint16_t blockNumber = 0;
 
@@ -1004,16 +1100,26 @@ static void convertInodeToBytes(Inode *inode, uint8_t *data) {
 }
 
 static uint16_t inodeIsDirectory(Inode *inode) {
+    if (inode == NULL) {
+        return 0;
+    }
+
     if ((inode->flags & FLAG_FILE_TYPE) == FILE_TYPE_DIRECTORY) {
         return 1;
     }
+
     return 0;
 }
 
 static uint16_t inodeIsLargeFile(Inode *inode) {
+    if (inode == NULL) {
+        return 0;
+    }
+
     if (inode->flags & FLAG_LARGE_FILE) {
         return 1;
     }
+
     return 0;
 }
 
@@ -1029,6 +1135,8 @@ static uint32_t getFileSize(Inode *inode) {
     }
 
     fileSize |= (inode->size0 << 16) | inode->size1;
+
+    return fileSize;
 }
 
 static void setFileSize(Inode *inode, uint32_t fileSize) {
@@ -1038,4 +1146,22 @@ static void setFileSize(Inode *inode, uint32_t fileSize) {
 
     inode->size0 = (uint8_t) ((fileSize >> 16) & 0xFF);
     inode->size1 = (uint16_t) fileSize;
+}
+
+// TODO: Fix issue with breaking after 30 path items
+static char** tokenizeFilePath(char *filePath, size_t *numPathItems) {
+    char** filePathTokens = malloc(sizeof(char*) * 30);
+    size_t count = 0;
+    char* filename = strtok(filePath, "/");
+
+    while (filename != NULL) {
+        filePathTokens[count] = filename;
+        count++;
+
+        filename = strtok(NULL, "/");
+    }
+
+    *numPathItems = count;
+
+    return filePathTokens;
 }

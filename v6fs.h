@@ -91,6 +91,7 @@
 #define E_ALLOCATE_FAILURE                  9
 #define E_INVALID_INDEX                     10
 #define E_INVALID_INODE_NUMBER              11
+#define E_FILE_ALREADY_EXISTS               12
 
 
 typedef struct Superblock {
@@ -147,7 +148,7 @@ extern Superblock * v6_initfs(uint16_t numBlocks, uint16_t numInodes);
  * externalFilename - the name of the file to read
  * v6Filename - the name of the file to write in the v6 file system.
  */
-extern int8_t v6_cpin(Superblock *sb, char *externalFilename, char *v6Filename);
+extern int8_t v6_cpin(Superblock *sb, char *externalFilePath, char *v6FilePath);
 
 /*
  * Reads a file from the V6 file system and writes it to an external file.
@@ -156,7 +157,7 @@ extern int8_t v6_cpin(Superblock *sb, char *externalFilename, char *v6Filename);
  * v6Filename - the name of the file to read from
  * externalFilename - the name of the file to write
  */
-extern int8_t v6_cpout(Superblock *sb, char *v6Filename, char *externalFilename);
+extern int8_t v6_cpout(Superblock *sb, char *v6FilePath, char *externalFilePath);
 
 /*
  * Creates a new directory with the given name in the V6 file system.
@@ -164,7 +165,7 @@ extern int8_t v6_cpout(Superblock *sb, char *v6Filename, char *externalFilename)
  * sb - the superblock that represents the V6 file system.
  * v6DirectoryName - the name of the directory to be created.
  */
-extern int8_t v6_mkdir(Superblock *sb, char *v6DirectoryName);
+extern int8_t v6_mkdir(Superblock *sb, char *v6DirectoryPath);
 
 /*
  * Removes a file in the V6 file system. (TODO: determine if this should also remove directories)
@@ -172,7 +173,7 @@ extern int8_t v6_mkdir(Superblock *sb, char *v6DirectoryName);
  * sb - the superblock that represents the V6 file system.
  * v6Filename - the name of the file to be removed.
  */
-extern int8_t v6_rm(Superblock *sb, char *v6Filename);
+extern int8_t v6_rm(Superblock *sb, char *v6FilePath);
 
 /*
  * Exits the program and saves all changes to the superblock back to the V6 file system.
@@ -180,7 +181,5 @@ extern int8_t v6_rm(Superblock *sb, char *v6Filename);
  * sb - the superblock that represents the V6 file system.
  */
 extern int8_t v6_quit(Superblock *sb);
-
-extern uint16_t getNewInodeNumber(Superblock *sb);
 
 #endif

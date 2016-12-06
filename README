@@ -1,0 +1,17 @@
+CS 5348 Operating Systems Concepts Project 2
+Jon Andrew Crain 
+Osadebamwen Imade
+
+Instructions: 
+
+Extract all the files to a folder in your desired location
+Using the command line terminal, navigate to the location of the folder containing all the source files
+Compile using "gcc *.c fsaccess"
+Run using "./fsaccess *directory of where you want the filesystem located", ex: ./fsaccess /Users/DebaImade/Desktop/v6filesystem
+Commands:
+initfs n1 n2; n1 - number of blocks on disk, n2 - number of inodes in the disk
+cpin externalfilepath /v6filename
+cpout /v6filename externalfilepath
+mkdir v6-dir - create a new directory
+Rm /v6filename - Delete a specific file
+q - quit and save changes

@@ -36,8 +36,8 @@ int main(int argc, char *argv[])
     Superblock *sb;
 
     //Load the filesystem
-    //sb = v6_loadfs(argv[1]);
-    sb = v6_loadfs("/Users/jon/UTD/CS5348/Project_2/v6fs/test.v6fs");
+    sb = v6_loadfs(argv[1]);
+    //sb = v6_loadfs("/Users/jon/UTD/CS5348/Project_2/v6fs/test.v6fs");
 
     while( exit_flag  == 0 ) {
         printf("v6fs: \n");

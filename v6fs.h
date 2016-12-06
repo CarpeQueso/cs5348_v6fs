@@ -9,7 +9,7 @@
  */
 #define BLOCK_SIZE                          512
 
-#define MAX_BLOCKS_PER_INODE                65536
+#define LAST_POSSIBLE_INODE_BLOCK           65535
 
 #define MAX_SINGLY_INDIRECT_BLOCKS_PER_INODE 263
 

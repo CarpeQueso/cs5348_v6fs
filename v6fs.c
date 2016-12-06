@@ -19,7 +19,7 @@ static Inode* inodeLoad(Superblock *sb, uint16_t inodeNumber);
 static int8_t inodeSave(Superblock *sb, uint16_t inodeNumber, Inode *inode);
 static uint16_t getNewInodeNumber(Superblock *sb);
 static int8_t inodeFree(Superblock *sb, uint16_t inodeNumber);
-static int8_t inodeInit(Inode *inode);
+static void inodeInit(Inode *inode);
 static int8_t repopulateInodeList(Superblock *sb);
 static int8_t addAllocatedBlockToInode(Superblock *sb, Inode *inode, uint16_t numBytes, uint16_t blockNumber);
 static int8_t convertInodeToLargeFile(Superblock *sb, Inode *inode);
@@ -49,10 +49,10 @@ Superblock * v6_loadfs(char *v6FileSystemName) {
     uint8_t sbBytes[BLOCK_SIZE];
     int8_t blockReadSuccess;
 
-    v6FileSystem = fopen(v6FileSystemName, "r+");
+    v6FileSystem = fopen(v6FileSystemName, "r+b");
 
     if (v6FileSystem == NULL) {
-        v6FileSystem = fopen(v6FileSystemName, "w+");
+        v6FileSystem = fopen(v6FileSystemName, "w+b");
         if (v6FileSystem == NULL) {
             return NULL;
         }
@@ -157,7 +157,7 @@ Superblock * v6_initfs(uint16_t numBlocks, uint16_t numInodes) {
 }
 
 int8_t v6_cpin(Superblock *sb, char *externalFilePath, char *v6FilePath) {
-    FILE *f = fopen(externalFilePath, "r");
+    FILE *f = fopen(externalFilePath, "rb");
     Inode *inode;
     uint16_t inodeNumber;
     uint16_t blockNumber;
@@ -204,7 +204,7 @@ int8_t v6_cpout(Superblock *sb, char *v6FilePath, char *externalFilePath) {
 
     inode = inodeLoad(sb, inodeNumber);
 
-    f = fopen(externalFilePath, "w");
+    f = fopen(externalFilePath, "wb");
 
     if (f == NULL) {
         free(inode);
@@ -223,7 +223,7 @@ int8_t v6_cpout(Superblock *sb, char *v6FilePath, char *externalFilePath) {
             fwrite(data, 1, remainingBytes, f);
             remainingBytes = 0;
         }
-        getNextAllocatedBlockNumber(NULL);
+        blockNumber = getNextAllocatedBlockNumber(NULL);
     }
 
     fclose(f);
@@ -274,16 +274,14 @@ int8_t v6_rm(Superblock *sb, char *v6FilePath) {
     if (inodeNumber == 0) {
         free(previousInode);
         free(inode);
+
         return E_NO_SUCH_FILE;
     } else {
-        // File already exists
         removeDirectoryEntry(previousInode, filePathTokens[numTokens - 1]);
         inodeFree(sb, inodeNumber);
+
+        return 0;
     }
-
-    inodeFree(sb, inodeNumber);
-
-    return 0;
 }
 
 int8_t v6_quit(Superblock *sb) {
@@ -570,7 +568,7 @@ static int8_t inodeSave(Superblock *sb, uint16_t inodeNumber, Inode *inode) {
     return 0;
 }
 
-static int8_t inodeInit(Inode *inode) {
+static void inodeInit(Inode *inode) {
     inode->flags = 0;
     inode->nlinks = 0;
     inode->uid = 0;
@@ -652,7 +650,7 @@ static int8_t addAllocatedBlockToInode(Superblock *sb, Inode *inode, uint16_t nu
         uint16_t index = 0;
         uint16_t blockNumberAtIndex = 0;
 
-        while (index < MAX_BLOCKS_PER_INODE) {
+        while (index <= LAST_POSSIBLE_INODE_BLOCK) {
             blockNumberAtIndex = getBlockNumberAtIndex(inode, index);
             if (blockNumberAtIndex == 0) {
                 setBlockNumberAtIndex(sb, inode, blockNumber, index);
@@ -735,7 +733,7 @@ static uint16_t getNextAllocatedBlockNumber(Inode *inode) {
     uint16_t blockNumber;
 
     if (isLargeFile) {
-        while (blockIndex < MAX_BLOCKS_PER_INODE) {
+        while (blockIndex <= LAST_POSSIBLE_INODE_BLOCK) {
             blockNumber = getBlockNumberAtIndex(persistentInode, blockIndex);
             blockIndex += 1;
             if (blockNumber != 0) {
@@ -885,13 +883,16 @@ static uint16_t findDirectoryEntry(Inode *inode, char *filename) {
 
 static uint16_t getBlockNumberAtIndex(Inode *inode, uint16_t index) {
     static Inode *lastInode = NULL;
+    static uint16_t cachedSinglyIndirectIndex = 0;
+    static uint16_t cachedSinglyIndirectBlock[256];
+    static uint16_t cachedDoublyIndirectBlock[256];
     // The block number to return.
     uint16_t blockNumber = 0;
 
     if (inodeIsLargeFile(inode)) {
         size_t addrIndex = index / 256U;
 
-        if (index >= MAX_BLOCKS_PER_INODE) {
+        if (index > LAST_POSSIBLE_INODE_BLOCK) {
             return 0;
         }
 
@@ -945,7 +946,7 @@ static int8_t setBlockNumberAtIndex(Superblock *sb, Inode *inode, uint16_t block
     if (inodeIsLargeFile(inode)) {
         size_t addrIndex = index / 256U;
 
-        if (index >= MAX_BLOCKS_PER_INODE) {
+        if (index >= LAST_POSSIBLE_INODE_BLOCK) {
             return E_INVALID_INDEX;
         }
 
